@@ -61,7 +61,7 @@ namespace Tofvesson.Crypto
             {
                 rijAlg.Key = Key;
                 rijAlg.IV = IV;
-                
+
                 using (MemoryStream msEncrypt = new MemoryStream())
                 {
                     using (CryptoStream csEncrypt = new CryptoStream(msEncrypt, rijAlg.CreateEncryptor(rijAlg.Key, rijAlg.IV), CryptoStreamMode.Write))
@@ -132,6 +132,20 @@ namespace Tofvesson.Crypto
     }
 
 
+    /// <summary>
+    /// Object representation of a Galois Field with characteristic 2
+    /// </summary>
+    public class Galois2
+    {
+        public static byte[] RijndaelCharacteristic
+        { get { return new byte[] { 0b0001_1011, 0b0000_0001 }; } }
+
+        protected readonly byte[] value;
+        protected readonly byte[] characteristic;
+        
+        public Galois2(byte[] value, byte[] characteristic) { }
+    }
+
     public static class AESFunctions
     {
         // Substitution box generated for all 256 possible input bytes from a part of a state
@@ -160,13 +174,18 @@ namespace Tofvesson.Crypto
         // MixColumns matrix basis. Used for multiplication over GF(2^8) i.e. mod P(x) where P(x) = x^8 + x^4 + x^3 + x + 1
         private static readonly byte[] mix_matrix = new byte[] { 2, 3, 1, 1 };
 
+        /// <summary>
+        /// Rijndael substitution step in the encryption (first thing that happens). This supplied confusion for the algorithm
+        /// </summary>
+        /// <param name="state">The AES state</param>
+        /// <returns>The substituted bytes for the given state</returns>
         public static byte[] SBox(byte[] state)
         {
             for (int i = 0; i < state.Length; ++i) state[i] = rijndael_sbox[state[i]];
             return state;
         }
 
-        // The AES state is a column-first 4x4 matrix. Demonstrated below are the decimal indices, as would be represented in the state:
+        // The AES state is a column-major 4x4 matrix (for AES-128). Demonstrated below are the decimal indices, as would be represented in the state:
         // 00 04 08 12
         // 01 05 09 13
         // 02 06 10 14
@@ -177,6 +196,12 @@ namespace Tofvesson.Crypto
         // 05 09 13 01  -  Shifted 1 to the left
         // 10 14 02 06  -  Shifted 2 to the left
         // 15 03 07 11  -  Shifted 3 to the left
+
+        /// <summary>
+        /// Shifts the rows of the column-major matrix
+        /// </summary>
+        /// <param name="state"></param>
+        /// <returns>The shifted matrix</returns>
         public static byte[] ShiftRows(byte[] state)
         {
             for(int i = 1; i<4; ++i)
@@ -188,7 +213,11 @@ namespace Tofvesson.Crypto
             return state;
         }
 
-        // MixColumns provides strong diffusion
+        /// <summary>
+        /// MixColumns adds diffusion to the algorithm. Performs matrix multiplication under GF(2^8) with the irreducible prime 0x11B (x^8 + x^4 + x^3 + x + 1)
+        /// </summary>
+        /// <param name="state"></param>
+        /// <returns>A matrix-multiplied and limited state (mixed)</returns>
         public static byte[] MixColumns(byte[] state)
         {
             byte[] res = new byte[16];
@@ -210,6 +239,12 @@ namespace Tofvesson.Crypto
             return res;
         }
 
+        /// <summary>
+        /// Introduces the subkey for this round to the state
+        /// </summary>
+        /// <param name="state">The state to introduce the roundkey to</param>
+        /// <param name="subkey">The subkey</param>
+        /// <returns>The state where the roundkey has been added</returns>
         public static byte[] AddRoundKey(byte[] state, byte[] subkey)
         {
             for (int i = 0; i < state.Length; ++i) state[i] ^= subkey[i];
@@ -220,21 +255,28 @@ namespace Tofvesson.Crypto
         /// Rotate bits to the left by 8 bits. This means that, for example, "0F AB 09 16" becomes "AB 09 16 0F"
         /// </summary>
         /// <param name="i"></param>
-        /// <returns></returns>
+        /// <returns>Rotated value</returns>
         public static int Rotate(int i) => ((i >> 24) & 255) & ((i << 8) & ~255);
 
+        /// <summary>
+        /// KDF for a given input string.
+        /// </summary>
+        /// <param name="message">Input string to derive key from</param>
+        /// <returns>A key and an IV</returns>
         public static Tuple<byte[], byte[]> DeriveKey(string message) =>
             new Tuple<byte[], byte[]>(
                 new SHA1CryptoServiceProvider().ComputeHash(Encoding.UTF8.GetBytes(message)).ToLength(128),
                 new RegularRandomProvider(new Random((int)(new BigInteger(Encoding.UTF8.GetBytes(message)) % int.MaxValue))).GetBytes(new byte[128])
              );
+        
 
-
+        // Rijndael helper methods
+        private static byte RCON(int i) => i<=0?(byte)0x8d:GF28Mod(i - 1);
 
 
         // Finite field arithmetic helper methods
-        private static byte RCON(int i) => i<=0?(byte)0x8d:GF28Mod(i - 1);
-
+        private static readonly byte[] ZERO = new byte[1] { 0 };
+        private static readonly byte[] ONE = new byte[1] { 1 };
         public static byte GF28Mod(int pow)
         {
             byte[] val = new byte[1+(pow/8)];
@@ -244,9 +286,9 @@ namespace Tofvesson.Crypto
         private static byte GF28Mod(byte[] value)
         {
             byte[] CA_l;
-            while (GT(value, CA_max, true))
+            while (GetFirstSetBit(value)>=8) // In GF(2^8), polynomials may not exceed x^7. This means that a value containing a bit representing x^8 or higher is invalid
             {
-                CA_l = NeedsAlignment(value) ? AlignCA(value) : CA;
+                CA_l = GetFirstSetBit(value)>=GetFirstSetBit(CA) ? Align(value, (byte[])CA.Clone()) : CA;
                 byte[] res = new byte[CA_l.Length];
                 for (int i = 0; i < CA_l.Length; ++i) res[i] = (byte)(value[i] ^ CA_l[i]);
                 value = ClipZeroes(res);
@@ -255,24 +297,47 @@ namespace Tofvesson.Crypto
         }
 
         /// <summary>
-        /// GF(2^8) uses the irreducible polynomial x^8 + x^4 + x^3 + x^1 + x^0 which can be represented as 0001 0001 1011 due to the characteristic of the field
+        /// Performs modulus on a given value by a certain value (mod) over a Galois Field with characteristic 2. This method performs both modulus and division.
+        /// </summary>
+        /// <param name="value">Value to perform modular aithmetic on</param>
+        /// <param name="mod">Modular value</param>
+        /// <returns>The result of the polynomial division and the result of the modulus</returns>
+        private static ModResult Mod(byte[] value, byte[] mod)
+        {
+            byte[] divRes = new byte[1];
+            while (GT(value, mod, true))
+            {
+                divRes = FlipBit(divRes, GetFirstSetBit(value) - GetFirstSetBit(mod)); // Notes the bit shift in the division tracker
+                value = Sub(value, Align(mod, value));
+            }
+            return new ModResult(divRes, value);
+        }
+
+        /// <summary>
+        /// The rijndael finite field uses the irreducible polynomial x^8 + x^4 + x^3 + x^1 + x^0 which can be represented as 0001 0001 1011 (or 0x11B) due to the characteristic of the field.
+        /// Because 00011011 is the low byte, it is the first value in the array
         /// </summary>
         private static readonly byte[] CA = new byte[] { 0b0001_1011, 0b0000_0001 };
         private static readonly byte[] CA_max = new byte[] { 0b0000_0000, 0b0000_0001 };
-        private static readonly int CA_FSB = 8;
-        private static byte[] AlignCA(byte[] value) => SHL((byte[])CA.Clone(), GetFirstSetBit(value) - CA_FSB);
-        private static bool NeedsAlignment(byte[] b) => b.Length > 1 && GetFirstSetBit(b) > CA_FSB;
+        private static byte[] Align(byte[] value, byte[] to) => SHL(value, GetFirstSetBit(to) - GetFirstSetBit(value));
+        private static bool NeedsAlignment(byte[] value, byte[] comp) => GetFirstSetBit(value) > GetFirstSetBit(comp);
         private static bool GT(byte[] v1, byte[] v2, bool eq)
         {
             byte[] bigger = v1.Length > v2.Length ? v1 : v2;
             byte[] smaller = v1.Length > v2.Length ? v2 : v1;
-            for (int i = Math.Max(bigger.Length, smaller.Length)-1; i >= 0; --i)
+            for (int i = bigger.Length-1; i >= 0; --i)
                 if (i >= smaller.Length && bigger[i] != 0)
                     return bigger == v1;
                 else if (i < smaller.Length && bigger[i] != smaller[i])
                     return (bigger[i] > smaller[i]) ^ (bigger != v1);
             return eq;
         }
+
+        /// <summary>
+        /// Remove preceding zero-bytes
+        /// </summary>
+        /// <param name="val">Value to remove preceding zeroes from</param>
+        /// <returns>Truncated value (if truncation was necessary)</returns>
         private static byte[] ClipZeroes(byte[] val)
         {
             int i = 0; 
@@ -282,11 +347,45 @@ namespace Tofvesson.Crypto
             return res;
         }
 
+        /// <summary>
+        /// Flips the bit at the given binary index in the supplied value. For example, flipping bit 5 in the number 0b0010_0011 would result in 0b0000_0011, whereas flipping index 7 would result in 0b1010_0011.
+        /// </summary>
+        /// <param name="value">Value to manipulate bits of</param>
+        /// <param name="bitIndex">Index (in bits) of the bit to flip.</param>
+        /// <returns>An array (may be the same object as the one given) with a bit flipped.</returns>
+        private static byte[] FlipBit(byte[] value, int bitIndex)
+        {
+            if (bitIndex >= value.Length * 8)
+            {
+                byte[] intermediate = new byte[bitIndex/8 + (bitIndex%8==0?0:1)];
+                Array.Copy(value, intermediate, value.Length);
+                value = intermediate;
+            }
+            value[bitIndex / 8] ^= (byte) (1 << (bitIndex % 8));
+            return value;
+        }
+
+        /// <summary>
+        /// Get the bit index of the highest bit. This will get the value of the exponent, i.e. index 8 represents x^8
+        /// </summary>
+        /// <param name="b">Value to get the highest set bit from</param>
+        /// <returns>Index of the highest set bit. -1 if no bits are set</returns>
         private static int GetFirstSetBit(byte[] b)
         {
-            for (int i = (b.Length * 8) - 1; i >= 0; --i) if ((b[i / 8] & (1 << (i % 8))) != 0) return i;
+            for (int i = (b.Length * 8) - 1; i >= 0; --i)
+                if (b[i / 8] == 0) i -= i % 8; // Speeds up searches through blank bytes
+                else if ((b[i / 8] & (1 << (i % 8))) != 0)
+                    return i;
             return -1;
         }
+
+        /// <summary>
+        /// Get the state of a bit in the supplied value.
+        /// </summary>
+        /// <param name="value">Value to get bit from</param>
+        /// <param name="index">Bit index to get bit from. (Not byte index)</param>
+        /// <returns></returns>
+        private static bool BitAt(byte[] value, int index) => (value[index / 8] & (1 << (index % 8))) != 0;
 
         private static byte ShiftedBitmask(int start)
         {
@@ -295,6 +394,73 @@ namespace Tofvesson.Crypto
             return res;
         }
 
+        // Addition, Subtraction and XOR are all equivalent under GF(2^8) due to the modular nature of the field
+        private static byte[] Add(byte[] v1, byte[] v2) => XOR(v1, v2);
+        private static byte[] Sub(byte[] v1, byte[] v2) => XOR(v1, v2);
+        private static byte[] XOR(byte[] v1, byte[] v2)
+        {
+            bool size = v1.Length > v2.Length;
+            byte[] bigger = size ? v1 : v2;
+            byte[] smaller = size ? v2 : v1;
+            byte[] res = new byte[bigger.Length];
+            Array.Copy(bigger, res, bigger.Length);
+            for (int i = 0; i < smaller.Length; ++i) res[i] ^= smaller[i];
+            return ClipZeroes(res);
+        }
+
+        /// <summary>
+        /// Perform polynomial multiplication under a galois field with characteristic 2
+        /// </summary>
+        /// <param name="value">Factor to multiply</param>
+        /// <param name="by">Factor to multiply other value by</param>
+        /// <returns>The product of the multiplication</returns>
+        private static byte[] Mul(byte[] value, byte[] by)
+        {
+            byte[] result = new byte[0];
+            for (int i = GetFirstSetBit(by); i >= 0; --i)
+                if (BitAt(by, i))
+                    result = Add(result, SHL(value, i));
+            return result;
+        }
+
+        /// <summary>
+        /// Perform inverse multiplication on a given irreducible polynomial. This is done by performing the extended euclidean algorithm (two-variable linear diophantine equations) on the two inputs.
+        /// </summary>
+        /// <param name="value"></param>
+        /// <returns></returns>
+        public static byte[] InvMul(byte[] value, byte[] mod)
+        {
+            Stack<byte[]> factors = new Stack<byte[]>();
+            ModResult res;
+            while(!Equals((res = Mod(value, mod)).rem, ZERO))
+            {
+                factors.Push(res.div);
+                value = mod;
+                mod = res.rem;
+            }
+
+            // Values are not coprime. There is no solution!
+            if (!Equals(mod, ONE)) return new byte[0];
+
+            byte[] useful = new byte[1] { 1 };
+            byte[] theOtherOne = factors.Pop();
+            byte[] tmp;
+            while (factors.Count > 0)
+            {
+                tmp = theOtherOne;
+                theOtherOne = Add(useful, Mul(theOtherOne, factors.Pop()));
+                useful = tmp;
+            }
+            return useful;
+        }
+
+        /// <summary>
+        /// Shifts bit in the array by 'shift' bits to the left. This means that 0b0010_0000_1000_1111 shited by 2 becomes 0b1000_0010_0011_1100. 
+        /// Note: A shift of 0 just acts like a slow value.Clone()
+        /// </summary>
+        /// <param name="value"></param>
+        /// <param name="shift"></param>
+        /// <returns></returns>
         private static byte[] SHL(byte[] value, int shift)
         {
             int set = shift / 8;
@@ -305,14 +471,42 @@ namespace Tofvesson.Crypto
             int fsb1 = GetFirstSetBit(value);
             if (fsb1 == -1) return value;
             byte fsb = (byte)(fsb1 % 8);
-            byte[] create = new byte[value.Length + set + (fsb + set >= 7 ? 1: 0)];
-            for(int i = set; i<create.Length; ++i)
+            byte[] create = new byte[value.Length + set + (fsb + sub >= 7 ? 1: 0)];
+            for(int i = set; i<value.Length; ++i)
             {
                 create[i] = (byte)(((value[i - set] & ibm) << sub) | carry);
                 carry = (byte)((value[i - set] & bm) >> (8-sub));
             }
             create[create.Length - 1] |= carry;
             return create;
+        }
+
+        private static bool Equals(byte[] v1, byte[] v2)
+        {
+            bool cmp = v1.Length > v2.Length;
+            byte[] bigger = cmp ? v1 : v2;
+            byte[] smaller = cmp ? v2 : v1;
+            for (int i = bigger.Length-1; i >= 0; --i)
+                if (i >= smaller.Length)
+                {
+                    if (bigger[i] != 0) return false;
+                }
+                else if (bigger[i] != smaller[i]) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Used to store the result of a polynomial division/modulus in GF(2^m)
+        /// </summary>
+        private struct ModResult
+        {
+            public ModResult(byte[] div, byte[] rem)
+            {
+                this.div = div;
+                this.rem = rem;
+            }
+            public byte[] div;
+            public byte[] rem;
         }
     }
 }

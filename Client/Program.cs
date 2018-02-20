@@ -8,6 +8,7 @@ namespace Client
     {
         static void Main(string[] args)
         {
+            byte[] res = AESFunctions.InvMul(new byte[] { 0b0010_0001 }, new byte[] { 0b0001_1011, 0b0000_0001 });
             byte result = AESFunctions.GF28Mod(12);
             bool connected = false;
 
