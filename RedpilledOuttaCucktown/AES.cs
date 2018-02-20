@@ -131,21 +131,6 @@ namespace Tofvesson.Crypto
         }
     }
 
-
-    /// <summary>
-    /// Object representation of a Galois Field with characteristic 2
-    /// </summary>
-    public class Galois2
-    {
-        public static byte[] RijndaelCharacteristic
-        { get { return new byte[] { 0b0001_1011, 0b0000_0001 }; } }
-
-        protected readonly byte[] value;
-        protected readonly byte[] characteristic;
-        
-        public Galois2(byte[] value, byte[] characteristic) { }
-    }
-
     public static class AESFunctions
     {
         // Substitution box generated for all 256 possible input bytes from a part of a state
@@ -269,108 +254,188 @@ namespace Tofvesson.Crypto
                 new RegularRandomProvider(new Random((int)(new BigInteger(Encoding.UTF8.GetBytes(message)) % int.MaxValue))).GetBytes(new byte[128])
              );
         
+        private static byte RCON(int i) => i<=0?(byte)0x8d:new Galois2(i-1, Galois2.RijndaelIP).ToByteArray()[0];
+    }
 
-        // Rijndael helper methods
-        private static byte RCON(int i) => i<=0?(byte)0x8d:GF28Mod(i - 1);
 
-
-        // Finite field arithmetic helper methods
+    /// <summary>
+    /// Object representation of a Galois Field with characteristic 2
+    /// </summary>
+    public class Galois2
+    {
         private static readonly byte[] ZERO = new byte[1] { 0 };
         private static readonly byte[] ONE = new byte[1] { 1 };
-        public static byte GF28Mod(int pow)
+
+        public static byte[] RijndaelIP
+        { get { return new byte[] { 0b0001_1011, 0b0000_0001 }; } }
+
+        protected readonly byte[] value;
+        protected readonly byte[] ip;
+
+        /// <summary>
+        /// Create a new Galois2 instance representing the given polynomial using the given irreducible polynomial. The given value will be reduced if possible
+        /// </summary>
+        /// <param name="value">Value to represent</param>
+        /// <param name="ip">Irreducible polynomial</param>
+        public Galois2(byte[] value, byte[] ip)
         {
-            byte[] val = new byte[1+(pow/8)];
-            val[pow / 8] |= (byte)(1 << (pow % 8));
-            return GF28Mod(val);
+            this.value = _ClipZeroes(_FieldMod(value, this.ip = ip));
         }
-        private static byte GF28Mod(byte[] value)
+
+        public Galois2(int pow, byte[] ip) : this(_FlipBit(new byte[0], pow), ip)
+        { }
+
+        public Galois2(byte[] value) : this(value, RijndaelIP)
+        { }
+
+        public Galois2(int pow) : this(pow, RijndaelIP)
+        { }
+
+        public static Galois2 FromValue(int value, byte[] ip) => new Galois2(Support.WriteToArray(new byte[4], value, 0), ip);
+        public static Galois2 FromValue(int value) => FromValue(value, Galois2.RijndaelIP);
+
+        public Galois2 Multiply(Galois2 factor) => new Galois2(_Mul(value, factor.value), ip);
+        public Galois2 Add(Galois2 val) => new Galois2(_Add(value, val.value), ip);
+        public Galois2 Subtract(Galois2 val) => new Galois2(_Sub(value, val.value), ip);
+        public Galois2 XOR(Galois2 val) => new Galois2(_XOR(value, val.value), ip);
+
+        /// <summary>
+        /// Perform inverse multiplication on this Galois2 object. This is done by performing the extended euclidean algorithm (two-variable linear diophantine equations).
+        /// </summary>
+        /// <param name="value"></param>
+        /// <returns></returns>
+        public Galois2 InvMul()
+        {
+            if (_ArraysEquals(value, ZERO)) return FromValue(0, ip);
+            Stack<byte[]> factors = new Stack<byte[]>();
+            byte[] val = value;
+            byte[] mod = ip;
+            ModResult res;
+            while (!_ArraysEquals((res = _Mod(val, mod)).rem, ZERO))
+            {
+                factors.Push(res.div);
+                val = mod;
+                mod = res.rem;
+            }
+
+            // Values are not coprime. There is no solution!
+            if (!_ArraysEquals(mod, ONE)) return new Galois2(new byte[0], ip);
+
+            byte[] useful = new byte[1] { 1 };
+            byte[] theOtherOne = factors.Pop();
+            byte[] tmp;
+            while (factors.Count > 0)
+            {
+                tmp = theOtherOne;
+                theOtherOne = _Add(useful, _Mul(theOtherOne, factors.Pop()));
+                useful = tmp;
+            }
+            return new Galois2(useful, ip);
+        }
+
+        public byte[] ToByteArray() => (byte[])value.Clone();
+        public override string ToString()
+        {
+            StringBuilder builder = new StringBuilder();
+            for (int i = _GetFirstSetBit(value); i >= 0; --i)
+                if (_BitAt(value, i))
+                    builder.Append("x^").Append(i).Append(" + ");
+            if (builder.Length == 0) builder.Append("0 ");
+            else builder.Remove(builder.Length - 2, 2);
+            builder.Append("(mod ");
+            int j;
+            for(int i = j = _GetFirstSetBit(ip); i>=0; --i)
+                if (_BitAt(ip, i))
+                    builder.Append("x^").Append(i).Append(" + ");
+            if (j == -1) builder.Append('0');
+            else builder.Remove(builder.Length - 3, 3);
+
+            return builder.Append(')').ToString();
+        }
+
+        // Overrides
+        public override bool Equals(object obj)
+        {
+            if (obj == null || !(obj is Galois2 || obj is byte[])) return false;
+
+            byte[] val = obj is Galois2 ? ((Galois2)obj).value : (byte[])obj;
+
+            bool cmp = val.Length > value.Length;
+            byte[] bigger = cmp ? val : value;
+            byte[] smaller = cmp ? value : val;
+            for (int i = bigger.Length - 1; i >= 0; --i)
+                if (i >= smaller.Length)
+                {
+                    if (bigger[i] != 0) return false;
+                }
+                else if (bigger[i] != smaller[i]) return false;
+
+            // If the value supplied was a byte array, ignore the irreducible prime, otherwise, make sure the irreducible primes are the same
+            return obj is byte[] || ((Galois2)obj).ip.Equals(ip);
+        }
+
+        public override int GetHashCode()
+        {
+            var hashCode = -579181322;
+            hashCode = hashCode * -1521134295 + EqualityComparer<byte[]>.Default.GetHashCode(value);
+            hashCode = hashCode * -1521134295 + EqualityComparer<byte[]>.Default.GetHashCode(ip);
+            return hashCode;
+        }
+
+
+
+        protected static bool _ArraysEquals(byte[] v1, byte[] v2)
+        {
+            bool cmp = v1.Length > v2.Length;
+            byte[] bigger = cmp ? v1 : v2;
+            byte[] smaller = cmp ? v2 : v1;
+            for (int i = bigger.Length - 1; i >= 0; --i)
+                if (i >= smaller.Length)
+                {
+                    if (bigger[i] != 0) return false;
+                }
+                else if (bigger[i] != smaller[i]) return false;
+            return true;
+        }
+
+        // Internal methods for certain calculations
+        protected static byte[] _FieldMod(byte[] applyTo, byte[] fieldIP)
         {
             byte[] CA_l;
-            while (GetFirstSetBit(value)>=8) // In GF(2^8), polynomials may not exceed x^7. This means that a value containing a bit representing x^8 or higher is invalid
+            int fsb = _GetFirstSetBit(fieldIP);
+            while (_GetFirstSetBit(applyTo) >= fsb) // In GF(2^8), polynomials may not exceed x^7. This means that a value containing a bit representing x^8 or higher is invalid
             {
-                CA_l = GetFirstSetBit(value)>=GetFirstSetBit(CA) ? Align(value, (byte[])CA.Clone()) : CA;
+                CA_l = _GetFirstSetBit(applyTo) >= _GetFirstSetBit(fieldIP) ? _Align((byte[])fieldIP.Clone(), applyTo) : fieldIP;
                 byte[] res = new byte[CA_l.Length];
-                for (int i = 0; i < CA_l.Length; ++i) res[i] = (byte)(value[i] ^ CA_l[i]);
-                value = ClipZeroes(res);
+                for (int i = 0; i < CA_l.Length; ++i) res[i] = (byte)(applyTo[i] ^ CA_l[i]);
+                applyTo = _ClipZeroes(res);
             }
-            return value[0];
+            return applyTo;
         }
 
-        /// <summary>
-        /// Performs modulus on a given value by a certain value (mod) over a Galois Field with characteristic 2. This method performs both modulus and division.
-        /// </summary>
-        /// <param name="value">Value to perform modular aithmetic on</param>
-        /// <param name="mod">Modular value</param>
-        /// <returns>The result of the polynomial division and the result of the modulus</returns>
-        private static ModResult Mod(byte[] value, byte[] mod)
-        {
-            byte[] divRes = new byte[1];
-            while (GT(value, mod, true))
-            {
-                divRes = FlipBit(divRes, GetFirstSetBit(value) - GetFirstSetBit(mod)); // Notes the bit shift in the division tracker
-                value = Sub(value, Align(mod, value));
-            }
-            return new ModResult(divRes, value);
-        }
-
-        /// <summary>
-        /// The rijndael finite field uses the irreducible polynomial x^8 + x^4 + x^3 + x^1 + x^0 which can be represented as 0001 0001 1011 (or 0x11B) due to the characteristic of the field.
-        /// Because 00011011 is the low byte, it is the first value in the array
-        /// </summary>
-        private static readonly byte[] CA = new byte[] { 0b0001_1011, 0b0000_0001 };
-        private static readonly byte[] CA_max = new byte[] { 0b0000_0000, 0b0000_0001 };
-        private static byte[] Align(byte[] value, byte[] to) => SHL(value, GetFirstSetBit(to) - GetFirstSetBit(value));
-        private static bool NeedsAlignment(byte[] value, byte[] comp) => GetFirstSetBit(value) > GetFirstSetBit(comp);
-        private static bool GT(byte[] v1, byte[] v2, bool eq)
-        {
-            byte[] bigger = v1.Length > v2.Length ? v1 : v2;
-            byte[] smaller = v1.Length > v2.Length ? v2 : v1;
-            for (int i = bigger.Length-1; i >= 0; --i)
-                if (i >= smaller.Length && bigger[i] != 0)
-                    return bigger == v1;
-                else if (i < smaller.Length && bigger[i] != smaller[i])
-                    return (bigger[i] > smaller[i]) ^ (bigger != v1);
-            return eq;
-        }
 
         /// <summary>
         /// Remove preceding zero-bytes
         /// </summary>
         /// <param name="val">Value to remove preceding zeroes from</param>
         /// <returns>Truncated value (if truncation was necessary)</returns>
-        private static byte[] ClipZeroes(byte[] val)
+        protected static byte[] _ClipZeroes(byte[] val)
         {
-            int i = 0; 
-            for(int j = val.Length-1; j>=0; --j) if (val[j] != 0) { i = j; break; }
-            byte[] res = new byte[i+1];
+            int i = 0;
+            for (int j = val.Length - 1; j >= 0; --j) if (val[j] != 0) { i = j; break; }
+            byte[] res = new byte[i + 1];
             Array.Copy(val, res, res.Length);
             return res;
         }
 
-        /// <summary>
-        /// Flips the bit at the given binary index in the supplied value. For example, flipping bit 5 in the number 0b0010_0011 would result in 0b0000_0011, whereas flipping index 7 would result in 0b1010_0011.
-        /// </summary>
-        /// <param name="value">Value to manipulate bits of</param>
-        /// <param name="bitIndex">Index (in bits) of the bit to flip.</param>
-        /// <returns>An array (may be the same object as the one given) with a bit flipped.</returns>
-        private static byte[] FlipBit(byte[] value, int bitIndex)
-        {
-            if (bitIndex >= value.Length * 8)
-            {
-                byte[] intermediate = new byte[bitIndex/8 + (bitIndex%8==0?0:1)];
-                Array.Copy(value, intermediate, value.Length);
-                value = intermediate;
-            }
-            value[bitIndex / 8] ^= (byte) (1 << (bitIndex % 8));
-            return value;
-        }
+
 
         /// <summary>
         /// Get the bit index of the highest bit. This will get the value of the exponent, i.e. index 8 represents x^8
         /// </summary>
         /// <param name="b">Value to get the highest set bit from</param>
         /// <returns>Index of the highest set bit. -1 if no bits are set</returns>
-        private static int GetFirstSetBit(byte[] b)
+        protected static int _GetFirstSetBit(byte[] b)
         {
             for (int i = (b.Length * 8) - 1; i >= 0; --i)
                 if (b[i / 8] == 0) i -= i % 8; // Speeds up searches through blank bytes
@@ -385,74 +450,31 @@ namespace Tofvesson.Crypto
         /// <param name="value">Value to get bit from</param>
         /// <param name="index">Bit index to get bit from. (Not byte index)</param>
         /// <returns></returns>
-        private static bool BitAt(byte[] value, int index) => (value[index / 8] & (1 << (index % 8))) != 0;
+        protected static bool _BitAt(byte[] value, int index) => (value[index / 8] & (1 << (index % 8))) != 0;
 
-        private static byte ShiftedBitmask(int start)
+        protected static byte _ShiftedBitmask(int start)
         {
             byte res = 0;
             for (int i = start; i > 0; --i) res = (byte)((res >> 1) | 128);
             return res;
         }
 
-        // Addition, Subtraction and XOR are all equivalent under GF(2^8) due to the modular nature of the field
-        private static byte[] Add(byte[] v1, byte[] v2) => XOR(v1, v2);
-        private static byte[] Sub(byte[] v1, byte[] v2) => XOR(v1, v2);
-        private static byte[] XOR(byte[] v1, byte[] v2)
+
+        protected static byte[] _Align(byte[] value, byte[] to) => _SHL(value, _GetFirstSetBit(to) - _GetFirstSetBit(value));
+        protected static bool _NeedsAlignment(byte[] value, byte[] comp) => _GetFirstSetBit(value) > _GetFirstSetBit(comp);
+        protected static bool _GT(byte[] v1, byte[] v2, bool eq)
         {
-            bool size = v1.Length > v2.Length;
-            byte[] bigger = size ? v1 : v2;
-            byte[] smaller = size ? v2 : v1;
-            byte[] res = new byte[bigger.Length];
-            Array.Copy(bigger, res, bigger.Length);
-            for (int i = 0; i < smaller.Length; ++i) res[i] ^= smaller[i];
-            return ClipZeroes(res);
+            byte[] bigger = v1.Length > v2.Length ? v1 : v2;
+            byte[] smaller = v1.Length > v2.Length ? v2 : v1;
+            for (int i = bigger.Length - 1; i >= 0; --i)
+                if (i >= smaller.Length && bigger[i] != 0)
+                    return bigger == v1;
+                else if (i < smaller.Length && bigger[i] != smaller[i])
+                    return (bigger[i] > smaller[i]) ^ (bigger != v1);
+            return eq;
         }
 
-        /// <summary>
-        /// Perform polynomial multiplication under a galois field with characteristic 2
-        /// </summary>
-        /// <param name="value">Factor to multiply</param>
-        /// <param name="by">Factor to multiply other value by</param>
-        /// <returns>The product of the multiplication</returns>
-        private static byte[] Mul(byte[] value, byte[] by)
-        {
-            byte[] result = new byte[0];
-            for (int i = GetFirstSetBit(by); i >= 0; --i)
-                if (BitAt(by, i))
-                    result = Add(result, SHL(value, i));
-            return result;
-        }
 
-        /// <summary>
-        /// Perform inverse multiplication on a given irreducible polynomial. This is done by performing the extended euclidean algorithm (two-variable linear diophantine equations) on the two inputs.
-        /// </summary>
-        /// <param name="value"></param>
-        /// <returns></returns>
-        public static byte[] InvMul(byte[] value, byte[] mod)
-        {
-            Stack<byte[]> factors = new Stack<byte[]>();
-            ModResult res;
-            while(!Equals((res = Mod(value, mod)).rem, ZERO))
-            {
-                factors.Push(res.div);
-                value = mod;
-                mod = res.rem;
-            }
-
-            // Values are not coprime. There is no solution!
-            if (!Equals(mod, ONE)) return new byte[0];
-
-            byte[] useful = new byte[1] { 1 };
-            byte[] theOtherOne = factors.Pop();
-            byte[] tmp;
-            while (factors.Count > 0)
-            {
-                tmp = theOtherOne;
-                theOtherOne = Add(useful, Mul(theOtherOne, factors.Pop()));
-                useful = tmp;
-            }
-            return useful;
-        }
 
         /// <summary>
         /// Shifts bit in the array by 'shift' bits to the left. This means that 0b0010_0000_1000_1111 shited by 2 becomes 0b1000_0010_0011_1100. 
@@ -461,44 +483,98 @@ namespace Tofvesson.Crypto
         /// <param name="value"></param>
         /// <param name="shift"></param>
         /// <returns></returns>
-        private static byte[] SHL(byte[] value, int shift)
+        protected static byte[] _SHL(byte[] value, int shift)
         {
             int set = shift / 8;
             int sub = shift % 8;
-            byte bm = ShiftedBitmask(sub);
-            byte ibm = (byte) ~bm;
+            byte bm = _ShiftedBitmask(sub);
+            byte ibm = (byte)~bm;
             byte carry = 0;
-            int fsb1 = GetFirstSetBit(value);
+            int fsb1 = _GetFirstSetBit(value);
             if (fsb1 == -1) return value;
             byte fsb = (byte)(fsb1 % 8);
-            byte[] create = new byte[value.Length + set + (fsb + sub >= 7 ? 1: 0)];
-            for(int i = set; i<value.Length; ++i)
+            byte[] create = new byte[value.Length + set + (fsb + sub >= 7 ? 1 : 0)];
+            for (int i = set; i - set < value.Length; ++i)
             {
                 create[i] = (byte)(((value[i - set] & ibm) << sub) | carry);
-                carry = (byte)((value[i - set] & bm) >> (8-sub));
+                carry = (byte)((value[i - set] & bm) >> (8 - sub));
             }
             create[create.Length - 1] |= carry;
             return create;
         }
 
-        private static bool Equals(byte[] v1, byte[] v2)
+
+        /// <summary>
+        /// Flips the bit at the given binary index in the supplied value. For example, flipping bit 5 in the number 0b0010_0011 would result in 0b0000_0011, whereas flipping index 7 would result in 0b1010_0011.
+        /// </summary>
+        /// <param name="value">Value to manipulate bits of</param>
+        /// <param name="bitIndex">Index (in bits) of the bit to flip.</param>
+        /// <returns>An array (may be the same object as the one given) with a bit flipped.</returns>
+        protected static byte[] _FlipBit(byte[] value, int bitIndex)
         {
-            bool cmp = v1.Length > v2.Length;
-            byte[] bigger = cmp ? v1 : v2;
-            byte[] smaller = cmp ? v2 : v1;
-            for (int i = bigger.Length-1; i >= 0; --i)
-                if (i >= smaller.Length)
-                {
-                    if (bigger[i] != 0) return false;
-                }
-                else if (bigger[i] != smaller[i]) return false;
-            return true;
+            if (bitIndex >= value.Length * 8)
+            {
+                byte[] intermediate = new byte[(bitIndex / 8) + 1];
+                Array.Copy(value, intermediate, value.Length);
+                value = intermediate;
+            }
+            value[bitIndex / 8] ^= (byte)(1 << (bitIndex % 8));
+            return value;
+        }
+
+
+
+
+        // Addition, Subtraction and XOR are all equivalent under GF(2^8) due to the modular nature of the field
+        protected static byte[] _Add(byte[] v1, byte[] v2) => _XOR(v1, v2);
+        protected static byte[] _Sub(byte[] v1, byte[] v2) => _XOR(v1, v2);
+        protected static byte[] _XOR(byte[] v1, byte[] v2)
+        {
+            bool size = v1.Length > v2.Length;
+            byte[] bigger = size ? v1 : v2;
+            byte[] smaller = size ? v2 : v1;
+            byte[] res = new byte[bigger.Length];
+            Array.Copy(bigger, res, bigger.Length);
+            for (int i = 0; i < smaller.Length; ++i) res[i] ^= smaller[i];
+            return _ClipZeroes(res);
+        }
+
+        /// <summary>
+        /// Perform polynomial multiplication under a galois field with characteristic 2
+        /// </summary>
+        /// <param name="value">Factor to multiply</param>
+        /// <param name="by">Factor to multiply other value by</param>
+        /// <returns>The product of the multiplication</returns>
+        protected static byte[] _Mul(byte[] value, byte[] by)
+        {
+            byte[] result = new byte[0];
+            for (int i = _GetFirstSetBit(by); i >= 0; --i)
+                if (_BitAt(by, i))
+                    result = _Add(result, _SHL(value, i));
+            return result;
+        }
+
+        /// <summary>
+        /// Performs modulus on a given value by a certain value (mod) over a Galois Field with characteristic 2. This method performs both modulus and division.
+        /// </summary>
+        /// <param name="value">Value to perform modular aithmetic on</param>
+        /// <param name="mod">Modular value</param>
+        /// <returns>The result of the polynomial division and the result of the modulus</returns>
+        protected static ModResult _Mod(byte[] value, byte[] mod)
+        {
+            byte[] divRes = new byte[1];
+            while (_GT(value, mod, true))
+            {
+                divRes = _FlipBit(divRes, _GetFirstSetBit(value) - _GetFirstSetBit(mod)); // Notes the bit shift in the division tracker
+                value = _Sub(value, _Align(mod, value));
+            }
+            return new ModResult(divRes, value);
         }
 
         /// <summary>
         /// Used to store the result of a polynomial division/modulus in GF(2^m)
         /// </summary>
-        private struct ModResult
+        protected struct ModResult
         {
             public ModResult(byte[] div, byte[] rem)
             {
