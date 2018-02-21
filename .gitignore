@@ -9,3 +9,6 @@
 /Server/bin/Debug
 /Server/obj/Debug
 /.vs/RedpilledOuttaCucktown/v15
+/Common/bin/Debug
+/.vs/ServerProject/v15/Server/sqlite3
+/Common/obj/Debug
