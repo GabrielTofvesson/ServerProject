@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net;
+using System.Text;
 using Tofvesson.Crypto;
 
 namespace Client
@@ -8,6 +9,8 @@ namespace Client
     {
         static void Main(string[] args)
         {
+            byte[] test = SHA.SHA1(Encoding.UTF8.GetBytes("Hello there!"));
+            Console.WriteLine(Support.ToHexString(test));
             Galois2 gal = Galois2.FromValue(33);
             Console.WriteLine(gal.ToString());
             Console.WriteLine(gal.InvMul().Multiply(gal).ToString());

@@ -236,6 +236,39 @@ namespace Tofvesson.Crypto
             return target;
         }
 
+        public static byte[] WriteContiguous(byte[] target, int offset, params int[] data)
+        {
+            for (int i = 0; i < data.Length; ++i) WriteToArray(target, data[i], offset + i * 4);
+            return target;
+        }
+
+        public static byte[] WriteToArray(byte[] target, uint data, int offset)
+        {
+            for (int i = 0; i < 4; ++i)
+                target[i + offset] = (byte)((data >> (i * 8)) & 255);
+            return target;
+        }
+
+        public static byte[] WriteContiguous(byte[] target, int offset, params uint[] data)
+        {
+            for (int i = 0; i < data.Length; ++i) WriteToArray(target, data[i], offset + i * 4);
+            return target;
+        }
+
+        public static byte[] Concatenate(params byte[][] bytes)
+        {
+            int alloc = 0;
+            foreach (byte[] b in bytes) alloc += b.Length;
+            byte[] result = new byte[alloc];
+            alloc = 0;
+            for(int i = 0; i<bytes.Length; ++i)
+            {
+                Array.Copy(bytes[i], 0, result, alloc, bytes[i].Length);
+                alloc += bytes[i].Length;
+            }
+            return result;
+        }
+
         public static void ArrayCopy<T>(IEnumerable<T> source, int sourceOffset, T[] destination, int offset, int length)
         {
             for (int i = 0; i < length; ++i) destination[i + offset] = source.ElementAt<T>(i+sourceOffset);
@@ -309,6 +342,20 @@ namespace Tofvesson.Crypto
                 if (lst.Item(i).Name.Equals(name))
                     return lst.Item(i);
             return null;
+        }
+        
+        // Swap endianness of a given integer
+        public static uint SwapEndian(uint value) => (uint)(((value >> 24) & (255 << 0)) | ((value >> 8) & (255 << 8)) | ((value << 8) & (255 << 16)) | ((value << 24) & (255 << 24)));
+
+        public static string ToHexString(byte[] value)
+        {
+            StringBuilder builder = new StringBuilder();
+            foreach(byte b in value)
+            {
+                builder.Append((char)((((b >> 4) < 10) ? 48 : 87) + (b >> 4)));
+                builder.Append((char)((((b & 15) < 10) ? 48 : 87) + (b & 15)));
+            }
+            return builder.ToString();
         }
 
         public static bool ReadYNBool(this TextReader reader, string nonDefault) => reader.ReadLine().ToLower().Equals(nonDefault);
