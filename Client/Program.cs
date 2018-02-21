@@ -9,7 +9,12 @@ namespace Client
     {
         static void Main(string[] args)
         {
-            byte[] test = SHA.SHA1(Encoding.UTF8.GetBytes("Hello there!"));
+            Rijndael128 symcrypt = new Rijndael128("Eyy");
+            byte[] testMSG = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+            string cryptres = symcrypt.DecryptString(symcrypt.EncryptString("Hello!"), 6);
+
+            RandomProvider provider = new CryptoRandomProvider();
+            byte[] test = KDF.PBKDF2(KDF.HMAC_SHA1, Encoding.UTF8.GetBytes("Hello there!"), new byte[] { 1, 2, 3, 4 }, 4096, 128);
             Console.WriteLine(Support.ToHexString(test));
             Galois2 gal = Galois2.FromValue(33);
             Console.WriteLine(gal.ToString());

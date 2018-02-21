@@ -328,6 +328,13 @@ namespace Tofvesson.Crypto
             return output;
         }
 
+        public static T[] SubArray<T>(this T[] array, int start, int end)
+        {
+            T[] res = new T[end-start];
+            for (int i = start; i < end; ++i) res[i - start] = array[i];
+            return res;
+        }
+
 
         //  --    Misc    --
         // Allows deconstruction when iterating over a collection of Tuples

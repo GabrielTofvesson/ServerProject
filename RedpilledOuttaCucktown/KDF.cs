@@ -46,7 +46,7 @@ namespace Tofvesson.Crypto
                 for(int i = 1; i<iterations; ++i)
                 {
                     u = function(password, u);
-                    for (int i = 0; i < u.Length; ++i) ures[i] ^= u[i];
+                    for (int j = 0; j < u.Length; ++j) ures[j] ^= u[j];
                 }
 
                 dk = Support.Concatenate(dk, ures);
