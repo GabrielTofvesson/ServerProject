@@ -49,7 +49,7 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\RedpilledOuttaCucktown\Common.csproj">
+    <ProjectReference Include="..\Common\Common.csproj">
       <Project>{216005DE-C35B-4CD3-8D27-0A49DEEDE62C}</Project>
       <Name>Common</Name>
     </ProjectReference>

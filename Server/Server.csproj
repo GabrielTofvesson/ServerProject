@@ -49,8 +49,8 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\RedpilledOuttaCucktown\Common.csproj">
-      <Project>{216005DE-C35B-4CD3-8D27-0A49DEEDE62C}</Project>
+    <ProjectReference Include="..\Common\Common.csproj">
+      <Project>{216005de-c35b-4cd3-8d27-0a49deede62c}</Project>
       <Name>Common</Name>
     </ProjectReference>
   </ItemGroup>
