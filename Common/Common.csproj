@@ -47,6 +47,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AES.cs" />
+    <Compile Include="CBC.cs" />
     <Compile Include="KDF.cs" />
     <Compile Include="RSA.cs" />
     <Compile Include="Net.cs" />

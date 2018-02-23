@@ -129,36 +129,34 @@ namespace Tofvesson.Crypto
             return new AES(File.ReadAllBytes(baseName + ".key"), File.ReadAllBytes(baseName + ".iv"), false);
         }
     }
-
-    public class Rijndael128
+     
+    public class Rijndael128 : BlockCipher
     {
         protected readonly byte[] roundKeys;
         protected readonly byte[] key;
-        protected readonly byte[] iv;
 
-        public Rijndael128(string key)
+        public Rijndael128(string key) : base(16)
         {
             // Derive a proper key
             var t = DeriveKey(key);
             this.key = t.Item1;
-            this.iv = t.Item2;
 
             // Expand the derived key
             roundKeys = KeySchedule(this.key, BitMode.Bit128);
         }
-        protected Rijndael128(byte[] key, byte[] iv)
+        protected Rijndael128(byte[] key) : base(16)
         {
             this.key = key;
-            this.iv = iv;
 
             // Expand the derived key
             roundKeys = KeySchedule(this.key, BitMode.Bit128);
         }
+
 
         public byte[] EncryptString(string message) => Encrypt(Encoding.UTF8.GetBytes(message));
         public string DecryptString(byte[] message, int length) => new string(Encoding.UTF8.GetChars(Decrypt(message, length, false))).Substring(0, length);
 
-        public byte[] Encrypt(byte[] message)
+        public override byte[] Encrypt(byte[] message)
         {
             byte[] result = new byte[message.Length + ((16 - (message.Length % 16))%16)];
             Array.Copy(message, result, message.Length);
@@ -166,6 +164,8 @@ namespace Tofvesson.Crypto
                 Array.Copy(AES128_Encrypt(result.SubArray(i * 16, i * 16 + 16)), 0, result, i * 16, 16);
             return result;
         }
+
+        public override byte[] Decrypt(byte[] ciphertext) => Decrypt(ciphertext, -1, false);
 
         public byte[] Decrypt(byte[] message, int messageLength) => Decrypt(message, messageLength, true);
         protected byte[] Decrypt(byte[] message, int messageLength, bool doTruncate)
@@ -178,8 +178,10 @@ namespace Tofvesson.Crypto
             return doTruncate ? result.SubArray(0, messageLength) : result;
         }
 
-        protected virtual byte[] AES128_Encrypt(byte[] state)
+        protected virtual byte[] AES128_Encrypt(byte[] input)
         {
+            byte[] state = new byte[16];
+            Array.Copy(input, state, 16);
             // Initial round
             state = AddRoundKey(state, roundKeys, 0);
 
@@ -194,8 +196,11 @@ namespace Tofvesson.Crypto
             return state;
         }
 
-        protected virtual byte[] AES128_Decrypt(byte[] state)
+        protected virtual byte[] AES128_Decrypt(byte[] input)
         {
+            byte[] state = new byte[16];
+            Array.Copy(input, state, 16);
+
             for (int rounds = 9; rounds > 0; --rounds)
             {
                 state = AddRoundKey(state, roundKeys, rounds * 16);
@@ -209,21 +214,20 @@ namespace Tofvesson.Crypto
         public void Save(string baseName, bool force = false)
         {
             if (force || !File.Exists(baseName + ".key")) File.WriteAllBytes(baseName + ".key", key);
-            if (force || !File.Exists(baseName + ".iv")) File.WriteAllBytes(baseName + ".iv", iv);
         }
 
-        public byte[] Serialize() => Support.SerializeBytes(new byte[][] { key, iv });
+        public byte[] Serialize() => Support.SerializeBytes(new byte[][] { key });
         public static Rijndael128 Deserialize(byte[] message, out int read)
         {
-            byte[][] output = Support.DeserializeBytes(message, 2);
+            byte[][] output = Support.DeserializeBytes(message, 1);
             read = output[0].Length + output[1].Length + 8;
-            return new Rijndael128(output[0], output[1]);
+            return new Rijndael128(output[0]);
         }
 
         public static Rijndael128 Load(string baseName)
         {
-            if (!File.Exists(baseName + ".iv") || !File.Exists(baseName + ".key")) throw new SystemException("Required files could not be located");
-            return new Rijndael128(File.ReadAllBytes(baseName + ".key"), File.ReadAllBytes(baseName + ".iv"));
+            if (!File.Exists(baseName + ".key")) throw new SystemException("Required files could not be located");
+            return new Rijndael128(File.ReadAllBytes(baseName + ".key"));
         }
 
 
