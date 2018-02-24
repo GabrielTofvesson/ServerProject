@@ -48,6 +48,7 @@ namespace Tofvesson.Crypto
             CanDecrypt = true;
         }
 
+        // Load necessary values from files
         private RSA(string e_file, string n_file, string d_file)
         {
             if (!File.Exists(e_file)) throw new SystemException($"Could not load from file \"{e_file}\"");
@@ -60,6 +61,8 @@ namespace Tofvesson.Crypto
             CanDecrypt = true;
         }
 
+        // Create a shallow copy of the given object because it's really just wasteful to perform a deep copy
+        // unless the person modifying this code is a madman, in which case I highly doubt they'd willfully leave this code alone anyway...
         public RSA(RSA copy)
         {
             e = copy.e;
@@ -69,6 +72,7 @@ namespace Tofvesson.Crypto
             CanDecrypt = copy.CanDecrypt;
         }
 
+        // Create a "remote" instance of the rsa object. This means that we do not know the private exponent
         private RSA(byte[] e, byte[] n)
         {
             this.e = new BigInteger(e);
@@ -78,6 +82,7 @@ namespace Tofvesson.Crypto
             CanDecrypt = false;
         }
 
+        // Encrypt (duh)
         public byte[] EncryptString(string message) => Encrypt(DEFAULT_ENCODING.GetBytes(message));
         public byte[] EncryptString(string message, Encoding encoding) => Encrypt(encoding.GetBytes(message));
         public byte[] EncryptString(string message, CryptoPadding padding) => Encrypt(DEFAULT_ENCODING.GetBytes(message), padding);
@@ -104,6 +109,7 @@ namespace Tofvesson.Crypto
             return cryptomessage.ToByteArray();
         }
 
+        // Decrypt (duh)
         public string DecryptString(byte[] message) => new string(DEFAULT_ENCODING.GetChars(Decrypt(message, NO_PADDING)));
         public string DecryptString(byte[] message, Encoding encoding) => new string(encoding.GetChars(Decrypt(message, NO_PADDING)));
         public string DecryptString(byte[] message, Encoding encoding, CryptoPadding padding) => new string(encoding.GetChars(Decrypt(message, padding)));
@@ -128,8 +134,10 @@ namespace Tofvesson.Crypto
             return message;
         }
 
-        public byte[] GetPK() => e.ToByteArray();
+        // Gives you the public key
+        public byte[] GetPubK() => e.ToByteArray();
 
+        // Save this RSA instance to correspondingly named files
         public void Save(string fileNameBase, bool force = false)
         {
             if (force || !File.Exists(fileNameBase + ".e")) File.WriteAllBytes(fileNameBase + ".e", e.ToByteArray());
@@ -137,14 +145,18 @@ namespace Tofvesson.Crypto
             if (force || !File.Exists(fileNameBase + ".d")) File.WriteAllBytes(fileNameBase + ".d", d.ToByteArray());
         }
 
+        // Serialize (for public key distribution)
         public byte[] Serialize() => Support.SerializeBytes(new byte[][] { e.ToByteArray(), n.ToByteArray() });
 
+        // Deserialize RSA data (for key distribution (but the other end (how many parentheses deep can I go?)))
         public static RSA Deserialize(byte[] function, out int read)
         {
             byte[][] rd = Support.DeserializeBytes(function, 2);
             read = rd[0].Length + rd[1].Length + 8;
             return new RSA(rd[0], rd[1]);
         }
+
+        // Check if the data we want to convert into an RSA-instance will cause a crash if we try to parse it
         public static bool CanDeserialize(IEnumerable<byte> data)
         {
             try
@@ -158,6 +170,8 @@ namespace Tofvesson.Crypto
             catch (Exception) { }
             return false;
         }
+
+        // Safely attempt to load RSA keys from files
         public static RSA TryLoad(string fileNameBase) => TryLoad(fileNameBase + ".e", fileNameBase + ".n", fileNameBase + ".d");
         public static RSA TryLoad(string e_file, string n_file, string d_file)
         {

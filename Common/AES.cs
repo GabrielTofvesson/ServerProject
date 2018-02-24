@@ -1,135 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Tofvesson.Crypto
 {
-    public sealed class AES
-    {
-        public static readonly byte[] DEFAULT_SALT = new byte[] { 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5 };
-        public static readonly Encoding DEFAULT_ENCODING = Encoding.UTF8;
-        public static readonly CryptoPadding DEFAULT_PADDING = new PassthroughPadding();
-        private const int BUFFER_SIZE = 2048;
-
-        public byte[] Key { get; private set; }
-        public byte[] IV { get; private set; }
-
-        public AES() {
-            using (RijndaelManaged r = new RijndaelManaged()) {
-                r.GenerateKey();
-                r.GenerateIV();
-                Key = r.Key;
-                IV = r.IV;
-            }
-            if (Key.Length == 0 || IV.Length == 0) throw new SystemException("Invalid parameter length!");
-        }
-
-        public AES(byte[] seed, byte[] salt)
-        {
-            var keyGenerator = new Rfc2898DeriveBytes(seed, salt, 300);
-            using (RijndaelManaged r = new RijndaelManaged())
-            {
-                r.GenerateIV();
-                Key = keyGenerator.GetBytes(32);
-                IV = r.IV;
-            }
-            if (Key.Length == 0 || IV.Length == 0) throw new SystemException("Invalid parameter length!");
-        }
-        public static AES Load(byte[] key, byte[] iv) => new AES(key, iv, false);
-        public AES(byte[] seed) : this(seed, DEFAULT_SALT) { }
-        public AES(string password, Encoding e) : this(e.GetBytes(password)) { }
-        public AES(string password) : this(DEFAULT_ENCODING.GetBytes(password), DEFAULT_SALT) { }
-        private AES(byte[] k, byte[] i, bool b)
-        {
-            Key = k;
-            IV = i;
-            if (Key.Length == 0 || IV.Length == 0) throw new SystemException("Invalid parameter length!");
-        }
-
-
-        public byte[] Encrypt(string message) => Encrypt(message, DEFAULT_ENCODING, DEFAULT_PADDING);
-        public byte[] Encrypt(string message, Encoding e, CryptoPadding padding) => Encrypt(e.GetBytes(message), padding);
-        public byte[] Encrypt(byte[] data, CryptoPadding padding)
-        {
-            data = padding.Pad(data);
-            if (data.Length == 0) throw new SystemException("Invalid message length");
-            byte[] result;
-            using (RijndaelManaged rijAlg = new RijndaelManaged())
-            {
-                rijAlg.Key = Key;
-                rijAlg.IV = IV;
-
-                using (MemoryStream msEncrypt = new MemoryStream())
-                {
-                    using (CryptoStream csEncrypt = new CryptoStream(msEncrypt, rijAlg.CreateEncryptor(rijAlg.Key, rijAlg.IV), CryptoStreamMode.Write))
-                    {
-                        using (StreamWriter swEncrypt = new StreamWriter(csEncrypt))
-                        {
-                            swEncrypt.Write(DEFAULT_ENCODING.GetChars(data));
-                        }
-                        result = msEncrypt.ToArray();
-                    }
-                }
-            }
-            return result;
-        }
-
-        public string DecryptString(byte[] data) => DecryptString(data, DEFAULT_ENCODING, DEFAULT_PADDING);
-        public string DecryptString(byte[] data, Encoding e, CryptoPadding padding) => new string(e.GetChars(Decrypt(data, padding)));
-        public byte[] Decrypt(byte[] data, CryptoPadding padding)
-        {
-            if (data.Length == 0) throw new SystemException("Invalid message length");
-            List<byte> read = new List<byte>();
-            using (RijndaelManaged rijAlg = new RijndaelManaged())
-            {
-                rijAlg.Key = Key;
-                rijAlg.IV = IV;
-                using (MemoryStream msDecrypt = new MemoryStream(data))
-                {
-                    using (CryptoStream csDecrypt = new CryptoStream(msDecrypt, rijAlg.CreateDecryptor(Key, IV), CryptoStreamMode.Read))
-                    {
-                        byte[] buf = new byte[BUFFER_SIZE];
-                        int test;
-                        int count;
-                        do
-                        {
-                            count = csDecrypt.Read(buf, 0, buf.Length);
-                            if (count == 0)
-                            {
-                                if ((test = csDecrypt.ReadByte()) == -1) break;
-                                read.Add((byte)test);
-                            }
-                            else for (int i = 0; i < count; ++i) read.Add(buf[i]);
-                        } while (true);
-                    }
-                }
-            }
-            return padding.Unpad(read.ToArray());
-        }
-
-        public void Save(string baseName, bool force = false)
-        {
-            if (force || !File.Exists(baseName + ".key")) File.WriteAllBytes(baseName + ".key", Key);
-            if (force || !File.Exists(baseName + ".iv")) File.WriteAllBytes(baseName + ".iv", IV);
-        }
-
-        public byte[] Serialize() => Support.SerializeBytes(new byte[][] { Key, IV });
-        public static AES Deserialize(byte[] message, out int read)
-        {
-            byte[][] output = Support.DeserializeBytes(message, 2);
-            read = output[0].Length + output[1].Length + 8;
-            return new AES(output[0], output[1], false);
-        }
-
-        public static AES Load(string baseName)
-        {
-            if (!File.Exists(baseName + ".iv") || !File.Exists(baseName + ".key")) throw new SystemException("Required files could not be located");
-            return new AES(File.ReadAllBytes(baseName + ".key"), File.ReadAllBytes(baseName + ".iv"), false);
-        }
-    }
-     
     public class Rijndael128 : BlockCipher
     {
         protected readonly byte[] roundKeys;
@@ -138,7 +13,7 @@ namespace Tofvesson.Crypto
         public Rijndael128(string key) : base(16)
         {
             // Derive a proper key
-            var t = DeriveKey(key);
+            var t = DeriveKey(key, "PlsNoRainbowz");
             this.key = t.Item1;
 
             // Expand the derived key
@@ -153,9 +28,11 @@ namespace Tofvesson.Crypto
         }
 
 
+        // Encrypt/Decrypt a string by just converting it to bytes and passing it along to the byte-based encryption/decryption methods
         public byte[] EncryptString(string message) => Encrypt(Encoding.UTF8.GetBytes(message));
         public string DecryptString(byte[] message, int length) => new string(Encoding.UTF8.GetChars(Decrypt(message, length, false))).Substring(0, length);
 
+        // Encrypt a message (this one jsut splits the message into blocks and passes it along)
         public override byte[] Encrypt(byte[] message)
         {
             byte[] result = new byte[message.Length + ((16 - (message.Length % 16))%16)];
@@ -165,8 +42,8 @@ namespace Tofvesson.Crypto
             return result;
         }
 
+        // Decrypt a message (these just pass the message along)
         public override byte[] Decrypt(byte[] ciphertext) => Decrypt(ciphertext, -1, false);
-
         public byte[] Decrypt(byte[] message, int messageLength) => Decrypt(message, messageLength, true);
         protected byte[] Decrypt(byte[] message, int messageLength, bool doTruncate)
         {
@@ -178,24 +55,29 @@ namespace Tofvesson.Crypto
             return doTruncate ? result.SubArray(0, messageLength) : result;
         }
 
+        // The actual AES encryption implementation
         protected virtual byte[] AES128_Encrypt(byte[] input)
         {
+            // The "state" is the name given the the 4x4 matrix that AES encrypts. The state is known as the "state" no matter what stage of AES it has gone through or how many left it has
             byte[] state = new byte[16];
             Array.Copy(input, state, 16);
-            // Initial round
+
+            // Initial round. Just just xor the key for this round input the input
             state = AddRoundKey(state, roundKeys, 0);
 
             // Rounds 1 - 9
             for (int rounds = 1; rounds < 10; ++rounds)
             {
-                state = ShiftRows(SubBytes(state, false));
-                if (rounds != 9) state = MixColumns(state, true);
-                state = AddRoundKey(state, roundKeys, rounds * 16);
+                state = ShiftRows(SubBytes(state, false));          // Shift the rows of the column-major matrix
+                if (rounds != 9) state = MixColumns(state, true);   // Mix the columns (gonna be honest, I don't remember what this does, but it has something to do with galois fields, so just check Galois2 out)
+                state = AddRoundKey(state, roundKeys, rounds * 16); // Xor the key into the mess
             }
 
+            // Now this matrix is encrypted!
             return state;
         }
 
+        // Literally just the inverse functions of the Encrypt-process run in reverse.
         protected virtual byte[] AES128_Decrypt(byte[] input)
         {
             byte[] state = new byte[16];
@@ -211,23 +93,26 @@ namespace Tofvesson.Crypto
             return AddRoundKey(state, roundKeys, 0);
         }
 
+        // Save the key to a file
         public void Save(string baseName, bool force = false)
         {
             if (force || !File.Exists(baseName + ".key")) File.WriteAllBytes(baseName + ".key", key);
         }
 
-        public byte[] Serialize() => Support.SerializeBytes(new byte[][] { key });
-        public static Rijndael128 Deserialize(byte[] message, out int read)
-        {
-            byte[][] output = Support.DeserializeBytes(message, 1);
-            read = output[0].Length + output[1].Length + 8;
-            return new Rijndael128(output[0]);
-        }
-
+        // Load the key from a file (gonna be honest, I think I just copy-pasted this from the RSA file and renamed some stuff)
         public static Rijndael128 Load(string baseName)
         {
             if (!File.Exists(baseName + ".key")) throw new SystemException("Required files could not be located");
             return new Rijndael128(File.ReadAllBytes(baseName + ".key"));
+        }
+
+        // De/-serializes the key (the method is just here for compatibility)
+        public byte[] Serialize() => Support.SerializeBytes(new byte[][] { key });
+        public static Rijndael128 Deserialize(byte[] message, out int read)
+        {
+            byte[][] output = Support.DeserializeBytes(message, 1);
+            read = output[0].Length + 8;
+            return new Rijndael128(output[0]);
         }
 
 
@@ -241,6 +126,7 @@ namespace Tofvesson.Crypto
             return (uint)Support.ReadInt(bytes, 0);
         }
 
+        // Rijndael key schedule: implemented for the three common implementations because I'm thorough or something
         public enum BitMode { Bit128, Bit192, Bit256 }
         private static byte[] KeySchedule(byte[] key, BitMode mode)
         {
@@ -289,8 +175,6 @@ namespace Tofvesson.Crypto
                         accruedBytes += 4;
                     }
             }
-
-            Console.WriteLine(Support.ArrayToString(output));
 
             return output;
         }
@@ -354,6 +238,7 @@ namespace Tofvesson.Crypto
             return state;
         }
 
+        // Reverse ShiftRows
         private static byte[] UnShiftRows(byte[] state)
         {
             for (int i = 1; i < 4; ++i)
@@ -365,6 +250,7 @@ namespace Tofvesson.Crypto
             return state;
         }
 
+        // Helper method, really
         private static void WriteToRow(uint value, byte[] to, int row)
         {
             to[row] = (byte)(value & 255);
@@ -373,6 +259,7 @@ namespace Tofvesson.Crypto
             to[row + 12] = (byte)((value >> 24) & 255);
         }
 
+        // Boring helper method
         private static uint GetRow(byte[] from, int row) => (uint)(from[row] | (from[row + 4] << 8) | (from[row + 8] << 16) | (from[row + 12] << 24));
 
         /// <summary>
@@ -428,16 +315,26 @@ namespace Tofvesson.Crypto
         /// </summary>
         /// <param name="message">Input string to derive key from</param>
         /// <returns>A key and an IV</returns>
-        private static Tuple<byte[], byte[]> DeriveKey(string message)
+        private static Tuple<byte[], byte[]> DeriveKey(string message, string salt)
         {
-            byte[] salt = new CryptoRandomProvider().GetBytes(16);                                   // Get a random 16-byte salt
-            byte[] key = KDF.PBKDF2(KDF.HMAC_SHA1, Encoding.UTF8.GetBytes(message), salt, 4096, 16); // Generate a 16-byte (128-bit) key from salt over 4096 iterations of HMAC-SHA1
-            return new Tuple<byte[], byte[]>(key, salt);
+            byte[] key = KDF.PBKDF2(KDF.HMAC_SHA1, Encoding.UTF8.GetBytes(message), salt.ToUTF8Bytes(), 4096, 16); // Generate a 16-byte (128-bit) key from salt over 4096 iterations of HMAC-SHA1
+            return new Tuple<byte[], byte[]>(key, salt.ToUTF8Bytes());
         }
 
         private static byte RCON(int i) => i <= 0 ? (byte)0x8d : new Galois2(i - 1).ToByteArray()[0];
     }
 
+
+
+    // If you genuinely care what this does, to which I would under regular circumstances call you a nerd but alas I researched this, soooooo here:
+    // https://en.wikipedia.org/wiki/Finite_field_arithmetic
+    // http://www.cs.utsa.edu/~wagner/laws/FFM.html
+    // https://www.wolframalpha.com/examples/math/algebra/finite-fields/
+    // https://www.youtube.com/watch?v=x1v2tX4_dkQ
+    // That YouTube link explains it the best imo, but the others really help and solidify the concept.
+    // Essentially, if you're genuinely going to torture yourself by trying to learn this stuff, at least do yourself a favour and start with the video.
+    // Also, I'm not gonna comment the code down there because it's a hellhole and it's late and I have a headache and ooooooooohhhhh I don't want to spend more time that I already have on that stuff.
+    // You get the comments that I put there when I made this; no more than that! Honestly, they're still plenty so just make do!
     /// <summary>
     /// Object representation of a Galois Field with characteristic 2
     /// </summary>
@@ -561,6 +458,9 @@ namespace Tofvesson.Crypto
             hashCode = hashCode * -1521134295 + EqualityComparer<byte[]>.Default.GetHashCode(ip);
             return hashCode;
         }
+
+
+        // Just internal stuff from here on out boiiiiiiis!
 
 
 

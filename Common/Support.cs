@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Numerics;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -11,6 +12,9 @@ using System.Xml;
 
 namespace Tofvesson.Crypto
 {
+
+    // Just a ton of support methods to make life easier. Almost aboslutely nothing of notable value here
+    // Honestly, just continue on to the next file of whatever, unless you have some unbearable desire to give yourself a headache and be completely disappointed by the end of reading this
     public static class Support
     {
         //   --    Math    --
@@ -375,19 +379,98 @@ namespace Tofvesson.Crypto
         }
 
         public static bool ReadYNBool(this TextReader reader, string nonDefault) => reader.ReadLine().ToLower().Equals(nonDefault);
+
+        public static string SerializeStrings(string[] data)
+        {
+            StringBuilder builder = new StringBuilder();
+            foreach (var datum in data) builder.Append(datum.Replace("&", "&amp;").Replace("\n", "&nl;")).Append("&nm;");
+            if (builder.Length > 0) builder.Remove(builder.Length - 4, 4);
+            return builder.ToString();
+        }
+
+        public static string[] DeserializeString(string message)
+        {
+            List<string> collect = new List<string>();
+            const string target = "&nm;";
+            int found = 0;
+            int prev = 0;
+            for(int i = 0; i<message.Length; ++i)
+            {
+                if (message[i] == target[found])
+                {
+                    if (++found == target.Length)
+                    {
+                        collect.Add(message.Substring(prev, (-prev) + (prev = i + 1) - target.Length));
+                        found = 0;
+                    }
+
+                }
+                else found = 0;
+            }
+            collect.Add(message.Substring(prev));
+            string[] data = collect.ToArray();
+            for (int i = 0; i < data.Length; ++i) data[i] = data[i].Replace("&nl;", "\n").Replace("&amp;", "&");
+            return data;
+        }
+
+        public static int Accepts(this ParameterInfo[] info, Type parameterType, int pastFirst = 0)
+        {
+            int found = -1;
+            for(int i = 0; i<info.Length; ++i)
+                if (parameterType.IsAssignableFrom(info[i].ParameterType) && ++found >= pastFirst)
+                    return i;
+            return -1;
+        }
     }
 
-    public static class RandomSupport
+
+    public abstract class RandomProvider
     {
-        public static BigInteger GenerateBoundedRandom(BigInteger max, RandomProvider provider)
+        public abstract byte[] GetBytes(int count);
+        public abstract byte[] GetBytes(byte[] buffer);
+
+        // Randomly generates a shortinteger bounded by the supplied integer. If bounding value is <= 0, it will be ignored
+        public ushort NextUShort(ushort bound = 0)
         {
-            byte[] b = max.ToByteArray();
-            byte maxLast = b[b.Length - 1];
-            provider.GetBytes(b);
-            if(maxLast!=0) b[b.Length - 1] %= maxLast;
-            b[b.Length - 1] |= 127;
-            return new BigInteger(b);
+            byte[] raw = GetBytes(2);
+            ushort result = 0;
+            for (byte s = 0; s < 2; ++s)
+            {
+                result <<= 8;
+                result |= raw[s];
+            }
+            return (ushort)(bound > 0 ? result % bound : result);
         }
+
+        // Randomly generates an integer bounded by the supplied integer. If bounding value is <= 0, it will be ignored
+        public uint NextUInt(uint bound = 0)
+        {
+            byte[] raw = GetBytes(4);
+            uint result = 0;
+            for (byte s = 0; s < 4; ++s)
+            {
+                result <<= 8;
+                result |= raw[s];
+            }
+            return bound > 0 ? result % bound : result;
+        }
+
+        // Randomly generates a long integer bounded by the supplied integer. If bounding value is <= 0, it will be ignored
+        public ulong NextULong(ulong bound = 0)
+        {
+            byte[] raw = GetBytes(8);
+            ulong result = 0;
+            for (byte s = 0; s < 8; ++s)
+            {
+                result <<= 8;
+                result |= raw[s];
+            }
+            return bound > 0 ? result % bound : result;
+        }
+
+        public short NextShort(short bound = 0) => (short)NextUInt((ushort)bound);
+        public int NextInt(int bound = 0) => (int)NextUInt((uint)bound);
+        public long NextLong(long bound = 0) => (long)NextULong((ulong)bound);
     }
 
     public sealed class RegularRandomProvider : RandomProvider
@@ -437,52 +520,16 @@ namespace Tofvesson.Crypto
         }
     }
 
-    public abstract class RandomProvider
+    public static class RandomSupport
     {
-        public abstract byte[] GetBytes(int count);
-        public abstract byte[] GetBytes(byte[] buffer);
-
-        // Randomly generates a shortinteger bounded by the supplied integer. If bounding value is <= 0, it will be ignored
-        public ushort NextUShort(ushort bound = 0)
+        public static BigInteger GenerateBoundedRandom(BigInteger max, RandomProvider provider)
         {
-            byte[] raw = GetBytes(2);
-            ushort result = 0;
-            for (byte s = 0; s < 2; ++s)
-            {
-                result <<= 8;
-                result |= raw[s];
-            }
-            return (ushort) (bound > 0 ? result % bound : result);
+            byte[] b = max.ToByteArray();
+            byte maxLast = b[b.Length - 1];
+            provider.GetBytes(b);
+            if (maxLast != 0) b[b.Length - 1] %= maxLast;
+            b[b.Length - 1] |= 127;
+            return new BigInteger(b);
         }
-
-        // Randomly generates an integer bounded by the supplied integer. If bounding value is <= 0, it will be ignored
-        public uint NextUInt(uint bound = 0)
-        {
-            byte[] raw = GetBytes(4);
-            uint result = 0;
-            for (byte s = 0; s < 4; ++s)
-            {
-                result <<= 8;
-                result |= raw[s];
-            }
-            return bound > 0 ? result % bound : result;
-        }
-
-        // Randomly generates a long integer bounded by the supplied integer. If bounding value is <= 0, it will be ignored
-        public ulong NextULong(ulong bound = 0)
-        {
-            byte[] raw = GetBytes(8);
-            ulong result = 0;
-            for (byte s = 0; s < 8; ++s)
-            {
-                result <<= 8;
-                result |=raw[s];
-            }
-            return bound > 0 ? result % bound : result;
-        }
-
-        public short NextShort(short bound = 0) => (short)NextUInt((ushort)bound);
-        public int NextInt(int bound = 0) => (int) NextUInt((uint) bound);
-        public long NextLong(long bound = 0) => (long)NextULong((ulong)bound);
     }
 }

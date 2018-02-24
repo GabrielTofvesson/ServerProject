@@ -152,7 +152,7 @@ namespace Tofvesson.Crypto
 
             public bool Update()
             {
-                bool stop = client.SyncListener(hasCrypto, expectedSize, out hasCrypto, out expectedSize, out bool read, buffer, buf);
+                bool stop = client.SyncListener(ref hasCrypto, ref expectedSize, out bool read, buffer, buf);
                 if (read) lastComm = DateTime.UtcNow.Ticks;
                 return stop;
             }
@@ -162,6 +162,8 @@ namespace Tofvesson.Crypto
     
     public class NetClient
     {
+        private static readonly RandomProvider rp = new CryptoRandomProvider();
+
         // Thread state lock for primitive values
         private readonly object state_lock = new object();
 
@@ -183,7 +185,8 @@ namespace Tofvesson.Crypto
         protected Socket Connection { get; private set; }
 
         // State/connection parameters
-        protected AES Crypto { get; private set; }
+        protected Rijndael128 Crypto { get; private set; }
+        protected GenericCBC CBC { get; private set; }
         public short Port { get; }
         protected bool Running
         {
@@ -216,7 +219,7 @@ namespace Tofvesson.Crypto
         protected bool ServerSide { get; private set; }
 
 
-        public NetClient(AES crypto, IPAddress target, short port, OnMessageRecieved handler, OnClientConnect onConn, int bufSize = 16384)
+        public NetClient(Rijndael128 crypto, IPAddress target, short port, OnMessageRecieved handler, OnClientConnect onConn, int bufSize = 16384)
         {
 #pragma warning disable CS0618 // Type or member is obsolete
             if (target.AddressFamily==AddressFamily.InterNetwork && target.Address == 16777343)
@@ -227,6 +230,7 @@ namespace Tofvesson.Crypto
             }
             this.target = target;
             Crypto = crypto;
+            if(crypto!=null) CBC = new PCBC(crypto, rp);
             this.bufSize = bufSize;
             this.handler = handler;
             this.onConn = onConn;
@@ -250,9 +254,9 @@ namespace Tofvesson.Crypto
         {
             if (ServerSide) throw new SystemException("Serverside socket cannot connect to a remote peer!");
             NetSupport.DoStateCheck(IsAlive || (eventListener != null && eventListener.IsAlive), false);
-            Running = true;
             Connection = new Socket(SocketType.Stream, ProtocolType.Tcp);
             Connection.Connect(target, Port);
+            Running = true;
             eventListener = new Thread(() =>
             {
                 bool cryptoEstablished = false;
@@ -260,7 +264,7 @@ namespace Tofvesson.Crypto
                 Queue<byte> ibuf = new Queue<byte>();
                 byte[] buffer = new byte[bufSize];
                 while (Running)
-                    if (SyncListener(cryptoEstablished, mLen, out cryptoEstablished, out mLen, out bool _, ibuf, buffer))
+                    if (SyncListener(ref cryptoEstablished, ref mLen, out bool _, ibuf, buffer))
                         break;
                 if (ibuf.Count != 0) Console.WriteLine("Client socket closed with unread data!");
             })
@@ -271,10 +275,8 @@ namespace Tofvesson.Crypto
             eventListener.Start();
         }
 
-        protected internal bool SyncListener(bool cryptoEstablished, int mLen, out bool cE, out int mL, out bool acceptedData, Queue<byte> ibuf, byte[] buffer)
+        protected internal bool SyncListener(ref bool cryptoEstablished, ref int mLen, out bool acceptedData, Queue<byte> ibuf, byte[] buffer)
         {
-            cE = cryptoEstablished;
-            mL = mLen;
             if (cryptoEstablished)
             {
                 lock (messageBuffer)
@@ -289,7 +291,7 @@ namespace Tofvesson.Crypto
                 ibuf.EnqueueAll(buffer, 0, read);
             }
             if (mLen == 0 && ibuf.Count >= 4)
-                mL = mLen = Support.ReadInt(ibuf.Dequeue(4), 0);
+                mLen = Support.ReadInt(ibuf.Dequeue(4), 0);
             if (mLen != 0 && ibuf.Count >= mLen)
             {
                 // Got a full message. Parse!
@@ -299,21 +301,43 @@ namespace Tofvesson.Crypto
                 {
                     if (ServerSide)
                     {
-                        Crypto = AES.Deserialize(decrypt.Decrypt(message), out int _);
+                        try
+                        {
+                            if (Crypto == null) Crypto = Rijndael128.Deserialize(decrypt.Decrypt(message), out int _);
+                            else CBC = new PCBC(Crypto, decrypt.Decrypt(message));
+                        }
+                        catch (Exception) {
+                            Console.WriteLine("A fatal error ocurrd when attempting to establish a secure channel! Stopping...");
+                            Thread.Sleep(5000);
+                            Environment.Exit(-1);
+                        }
                     }
                     else
                     {
                         // Reconstruct RSA object from remote public keys and use it to encrypt our serialized AES key/iv
-                        byte[] b1 = NetSupport.WithHeader(RSA.Deserialize(message, out int _).Encrypt(Crypto.Serialize()));
-                        Connection.Send(b1);
+                        RSA asymm = RSA.Deserialize(message, out int _);
+                        Connection.Send(NetSupport.WithHeader(asymm.Encrypt(Crypto.Serialize())));
+                        Connection.Send(NetSupport.WithHeader(asymm.Encrypt(CBC.IV)));
                     }
-                    cE = true;
-                    onConn(this);
+                    if (CBC != null)
+                    {
+                        cryptoEstablished = true;
+                        onConn(this);
+                    }
                 }
                 else
                 {
-                    string response = handler(Crypto.DecryptString(message), out bool live);
-                    if (response != null) Connection.Send(NetSupport.WithHeader(Crypto.Encrypt(response)));
+                    // Decrypt the incoming message
+                    byte[] read = Crypto.Decrypt(message);
+
+                    // Read the decrypted message length
+                    int mlenInner = Support.ReadInt(read, 0);
+
+                    // Send the message to the handler and get a response
+                    string response = handler(read.SubArray(4, 4+mlenInner).ToUTF8String(), out bool live);
+                    
+                    // Send the response (if given one) and drop the connection if the handler tells us to
+                    if (response != null) Connection.Send(NetSupport.WithHeader(Crypto.Encrypt(NetSupport.WithHeader(response.ToUTF8Bytes()))));
                     if (!live)
                     {
                         Running = false;
@@ -327,11 +351,15 @@ namespace Tofvesson.Crypto
                 }
 
                 // Reset expexted message length
-                mL = 0;
+                mLen = 0;
             }
             return false;
         }
 
+        /// <summary>
+        /// Disconnect from server
+        /// </summary>
+        /// <returns></returns>
         public virtual async Task<object> Disconnect()
         {
             NetSupport.DoStateCheck(IsAlive, true);
@@ -341,6 +369,7 @@ namespace Tofvesson.Crypto
             return await new TaskFactory().StartNew<object>(() => { eventListener.Join(); return null; });
         }
 
+        // Methods for sending data to the server
         public bool TrySend(string message) => TrySend(Encoding.UTF8.GetBytes(message));
         public bool TrySend(byte[] message)
         {
@@ -354,20 +383,23 @@ namespace Tofvesson.Crypto
         public virtual void Send(string message) => Send(Encoding.UTF8.GetBytes(message));
         public virtual void Send(byte[] message) {
             NetSupport.DoStateCheck(IsAlive, true);
-            lock (messageBuffer) messageBuffer.Enqueue(Crypto.Encrypt(message, new PassthroughPadding()));
+            lock (messageBuffer) messageBuffer.Enqueue(Crypto.Encrypt(NetSupport.WithHeader(message)));
         }
     }
 
+    // Helper methods. WithHeader() should really just be in Support.cs
     public static class NetSupport
     {
-        internal static byte[] WithHeader(string message) => WithHeader(Encoding.UTF8.GetBytes(message));
-        internal static byte[] WithHeader(byte[] message)
+        public static byte[] WithHeader(string message) => WithHeader(Encoding.UTF8.GetBytes(message));
+        public static byte[] WithHeader(byte[] message)
         {
             byte[] nmsg = new byte[message.Length + 4];
             Support.WriteToArray(nmsg, message.Length, 0);
             Array.Copy(message, 0, nmsg, 4, message.Length);
             return nmsg;
         }
+
+        public static byte[] FromHeaded(byte[] msg, int offset) => msg.SubArray(offset + 4, offset + 4 + Support.ReadInt(msg, offset));
 
         internal static void DoStateCheck(bool state, bool target) {
             if (state != target) throw new InvalidOperationException("Bad state!");

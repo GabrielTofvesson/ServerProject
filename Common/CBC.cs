@@ -1,37 +1,37 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Reflection;
 
 namespace Tofvesson.Crypto
 {
+    // Specifies the basic structure of a block cipher
     public abstract class BlockCipher
     {
         public Int32 BlockSize { get; private set; }
-        public BlockCipher(int blockSize)
-        {
-            this.BlockSize = blockSize;
-        }
+
+        public BlockCipher(int blockSize) { this.BlockSize = blockSize; }
+
         public abstract byte[] Encrypt(byte[] message);
         public abstract byte[] Decrypt(byte[] ciphertext);
     }
 
-    
+    // Base structure of a cipher block chaining algorithm
+    // For an in-depth explanation of what this is (as well as visuals of the implementations that are a bit futher down), visit https://en.wikipedia.org/wiki/Block_cipher_mode_of_operation
     public abstract class GenericCBC : BlockCipher
     {
+        private static readonly byte[] splitter = ":".ToUTF8Bytes();
+
+
         private readonly byte[] iv_e;
         public byte[] IV { get => (byte[])iv_e.Clone(); }
 
         protected readonly byte[] currentIV_e;
         protected readonly byte[] currentIV_d;
         protected readonly BlockCipher cipher;
-        protected readonly RandomProvider provider;
 
         public GenericCBC(BlockCipher cipher, RandomProvider provider) : base(cipher.BlockSize)
         {
             this.cipher = cipher;
-            this.provider = provider;
 
             // Generate initialization vector and set it as the current iv
             iv_e = provider.GetBytes(new byte[cipher.BlockSize]);
@@ -41,6 +41,18 @@ namespace Tofvesson.Crypto
             Array.Copy(iv_e, currentIV_d, iv_e.Length);
         }
 
+        public GenericCBC(BlockCipher cipher, byte[] iv_e) : base(cipher.BlockSize)
+        {
+            this.iv_e = iv_e;
+            this.cipher = cipher;
+
+            currentIV_e = new byte[cipher.BlockSize];
+            currentIV_d = new byte[cipher.BlockSize];
+            Array.Copy(iv_e, currentIV_e, iv_e.Length);
+            Array.Copy(iv_e, currentIV_d, iv_e.Length);
+        }
+
+        // Separate a given messae into blocks for processing
         protected byte[][] SplitBlocks(byte[] message)
         {
             byte[][] blocks = new byte[(message.Length / cipher.BlockSize) + (message.Length % cipher.BlockSize == 0 ? 0 : 1)][];
@@ -57,6 +69,7 @@ namespace Tofvesson.Crypto
             return blocks;
         }
 
+        // Recombine blocks that have been split back into a single string of bytes
         protected byte[] CollectBlocks(byte[][] result)
         {
             byte[] collected = new byte[result.Length * cipher.BlockSize];
@@ -75,11 +88,16 @@ namespace Tofvesson.Crypto
     /// <summary>
     /// Standard cipher block chaining implementation (not recommended, but available nonetheless)
     /// </summary>
-    public class CBC : GenericCBC
+    public sealed class CBC : GenericCBC
     {
         public CBC(BlockCipher cipher, RandomProvider provider) : base(cipher, provider)
         { }
 
+        public CBC(BlockCipher cipher, byte[] iv_e) : base(cipher, iv_e)
+        { }
+
+
+        // This entire method is pretty self-explanatory. All you need to know is: currentIV_e represents the IV currently being used for encryption
         public override byte[] Encrypt(byte[] message)
         {
             byte[][] blocks = SplitBlocks(message);
@@ -110,11 +128,16 @@ namespace Tofvesson.Crypto
 
             return CollectBlocks(blocks);
         }
+        
     }
 
-    public class PCBC : GenericCBC
+    // Propogating CBC
+    public sealed class PCBC : GenericCBC
     {
         public PCBC(BlockCipher cipher, RandomProvider provider) : base(cipher, provider)
+        { }
+
+        public PCBC(BlockCipher cipher, byte[] iv_e) : base(cipher, iv_e)
         { }
 
         public override byte[] Encrypt(byte[] message)
@@ -162,9 +185,12 @@ namespace Tofvesson.Crypto
         }
     }
 
-    public class CFB : GenericCBC
+    public sealed class CFB : GenericCBC
     {
         public CFB(BlockCipher cipher, RandomProvider provider) : base(cipher, provider)
+        { }
+
+        public CFB(BlockCipher cipher, byte[] iv_e) : base(cipher, iv_e)
         { }
 
         public override byte[] Encrypt(byte[] message)
